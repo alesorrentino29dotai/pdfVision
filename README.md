@@ -15,13 +15,14 @@
 
 ---
 
-## Example (input vs output)
+## Examples (input vs output)
 
-Screenshots below illustrate one page **before** and **after** processing (same viewport; correct options marked with green squares).
+Screenshots below show two example page fragments **before** and **after** processing (same viewport).
 
-| Input (fragment) | Output (annotated) |
-|------------------|----------------------|
-| ![Input example](in.png) | ![Output example](out.png) |
+| Input | Output (annotated) |
+|------|---------------------|
+| ![Input example 1](in.png) | ![Output example 1](out.png) |
+| ![Input example 2](in_2.png) | ![Output example 2](out_2.png) |
 
 > *Figures are representative. The repository does not ship third-party exam PDFs; add your own document locally.*
 
