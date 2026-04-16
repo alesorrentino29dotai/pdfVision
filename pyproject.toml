@@ -1,0 +1,20 @@
+[project]
+name = "pdfvision"
+version = "0.1.0"
+description = "MCQ PDF solver: extract, LLM inference, annotated PDF + JSON"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+dependencies = [
+  "pymupdf>=1.24.0",
+  "pillow>=10.0.0",
+  "pydantic>=2.6.0",
+  "tenacity>=8.2.0",
+  "openai>=1.30.0",
+  "ollama>=0.2.0",
+  "google-genai>=1.70.0",
+]
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"

@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.Python
+.venv/
+venv/
+.env
+.env.*
+
+# Secrets (never commit API keys)
+*key*.txt
+*_secret*
+credentials.json
+
+# Run outputs (regenerate with run.py)
+debug_renders/
+debug/
+*.answers.json
+*.pdf
+
+# OS / IDE
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+
+# Local experiments
+outputs/
+scratch/
