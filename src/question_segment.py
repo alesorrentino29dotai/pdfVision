@@ -124,3 +124,20 @@ def segment_questions(
 
     return out
 
+
+def is_open_question_candidate(q: Question, *, min_prompt_len: int = 16) -> bool:
+    """
+    Heuristic for open-ended items in this corpus:
+    - no A/B/C/D options parsed
+    - non-empty prompt ending with '.'
+    - prompt length above a minimum threshold
+    """
+    if q.options:
+        return False
+    p = _normalize(q.prompt)
+    if not p:
+        return False
+    if len(p) < min_prompt_len:
+        return False
+    return p.endswith(".")
+

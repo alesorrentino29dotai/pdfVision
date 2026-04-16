@@ -11,9 +11,9 @@ import fitz  # PyMuPDF
 from src.annotate_pdf import annotate_pdf
 from src.image_link import link_questions_to_images
 from src.pdf_extract import PageExtract, export_image_region_pngs, export_page_renders, extract_text_lines
-from src.question_segment import Question, segment_questions
+from src.question_segment import Question, is_open_question_candidate, segment_questions
 from src.solver.api_solver import ApiSolver
-from src.solver.base import SolveInput, SolveResult, Solver
+from src.solver.base import OpenSolveResult, SolveInput, SolveResult, Solver
 from src.solver.gemini_solver import GeminiSolver
 from src.solver.local_solver import LocalOllamaSolver
 
@@ -48,6 +48,11 @@ def _pages_label_1based(indices: Optional[list[int]]) -> str:
     if indices is None:
         return "all"
     return ",".join(str(i + 1) for i in indices)
+
+
+def _console_safe(text: str) -> str:
+    """Avoid UnicodeEncodeError on Windows terminals with cp1252 encoding."""
+    return text.encode("cp1252", errors="replace").decode("cp1252")
 
 
 def _build_solver(
@@ -110,6 +115,19 @@ def run_from_answers_json(args: argparse.Namespace) -> int:
         except Exception as e:
             raise SystemExit(f"Voce answers non valida per {qid!r}: {e}") from e
 
+    open_results: dict[str, OpenSolveResult] = {}
+    for qid, row in payload.get("open_answers", {}).items():
+        try:
+            open_results[qid] = OpenSolveResult.model_validate(
+                {
+                    "answer_text": row["answer_text"],
+                    "confidence": row.get("confidence", 0.5),
+                    "rationale": row.get("rationale", ""),
+                }
+            )
+        except Exception as e:
+            raise SystemExit(f"Voce open_answers non valida per {qid!r}: {e}") from e
+
     mode = args.mode
     if args.verbose:
         print("[run] === from-answers -> PDF (niente inferenza) ===")
@@ -118,11 +136,24 @@ def run_from_answers_json(args: argparse.Namespace) -> int:
         print(f"[run] pages (1-based): {_pages_label_1based(page_indices)}")
         n_mcq = sum(1 for q in questions if len(q.options) == 4)
         matched = sum(1 for q in questions if len(q.options) == 4 and q.qid in results)
-        print(f"[run] domande: {len(questions)} | MCQ: {n_mcq} | risposte JSON usate su MCQ: {matched}/{n_mcq}")
+        n_open = sum(1 for q in questions if is_open_question_candidate(q))
+        matched_open = sum(1 for q in questions if is_open_question_candidate(q) and q.qid in open_results)
+        print(
+            f"[run] domande: {len(questions)} | MCQ: {n_mcq} | OPEN: {n_open} | "
+            f"risposte JSON usate MCQ={matched}/{n_mcq}, OPEN={matched_open}/{n_open}"
+        )
         print(f"[run] chiavi in answers: {len(payload.get('answers', {}))}")
+        print(f"[run] chiavi in open_answers: {len(payload.get('open_answers', {}))}")
         print(f"[run] mode annotazione: {mode}")
 
-    stats = annotate_pdf(pdf_in=pdf_in, pdf_out=pdf_out, questions=questions, results=results, mode=mode)
+    stats = annotate_pdf(
+        pdf_in=pdf_in,
+        pdf_out=pdf_out,
+        questions=questions,
+        results=results,
+        open_results=open_results,
+        mode=mode,
+    )
 
     out_payload = {**payload, "pdf_out": str(pdf_out), "mode": mode, "stats": {"highlighted": stats.highlighted, "fallback_notes": stats.fallback_notes}}
     answers_json.write_text(json.dumps(out_payload, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -152,6 +183,7 @@ def main() -> int:
     )
     ap.add_argument("--backend", choices=["api", "local", "gemini"], default="gemini")
     ap.add_argument("--model", default="gemini-2.5-flash", help="Model name for selected backend")
+    ap.add_argument("--subject", default="elettrotecnica", help='Subject hint for prompts, e.g. "elettrotecnica".')
     ap.add_argument("--api-key", default=None, help="API key (optional; else env)")
     ap.add_argument("--gemini-key", default=None, help="Gemini API key (optional; else GEMINI_API_KEY/GOOGLE_API_KEY env)")
     ap.add_argument("--ollama-host", default=None, help="Ollama host, e.g. http://localhost:11434")
@@ -215,7 +247,7 @@ def main() -> int:
             f"[run] dpi={args.dpi} image_policy={args.image_policy} mode={args.mode} "
             f"skip_solve={args.skip_solve}"
         )
-        print(f"[run] backend={args.backend} model={args.model}")
+        print(f"[run] backend={args.backend} model={args.model} subject={args.subject}")
     if page_indices is not None:
         export_page_renders(pdf_in, render_dir, pages=page_indices, dpi=args.dpi)
     else:
@@ -235,7 +267,9 @@ def main() -> int:
     page_image_count = {p.page_index: p.image_count for p in extracts}
 
     if args.verbose:
-        print(f"[run] domande segmentate: {len(questions)} (MCQ 4 opzioni: {sum(1 for q in questions if len(q.options) == 4)})")
+        n_mcq = sum(1 for q in questions if len(q.options) == 4)
+        n_open = sum(1 for q in questions if is_open_question_candidate(q))
+        print(f"[run] domande segmentate: {len(questions)} (MCQ 4 opzioni: {n_mcq}, OPEN candidate: {n_open})")
 
     def resolve_solve_image(q: Question) -> tuple[str | None, str]:
         """Pick PNG path for the solver: per-image crop when linked, else full page when policy allows."""
@@ -259,10 +293,12 @@ def main() -> int:
         return None, "none"
 
     results: dict[str, SolveResult] = {}
+    open_results: dict[str, OpenSolveResult] = {}
     if solver is not None:
         mcq_questions = [q for q in questions if len(q.options) == 4]
+        open_questions = [q for q in questions if is_open_question_candidate(q)]
         if args.verbose:
-            print(f"[run] total questions: {len(questions)} | MCQ: {len(mcq_questions)}")
+            print(f"[run] total questions: {len(questions)} | MCQ: {len(mcq_questions)} | OPEN: {len(open_questions)}")
             # Per-page summary (for the pages we processed)
             pages_sorted = sorted(page_has_images.keys())
             by_pi = {e.page_index: e for e in extracts}
@@ -285,6 +321,7 @@ def main() -> int:
             vis_path, vis_kind = resolve_solve_image(q)
             inp = SolveInput(
                 qid=q.qid,
+                subject=args.subject,
                 prompt=q.prompt,
                 options=[opt.text for opt in q.options],
                 page_image_png_path=vis_path,
@@ -301,12 +338,12 @@ def main() -> int:
                 pr = q.prompt
                 if len(pr) > 400:
                     pr = pr[:400] + "…"
-                print(f"[run]   testo domanda: {pr!r}")
+                print(f"[run]   testo domanda: {_console_safe(pr)!r}")
                 for opt in q.options:
                     ot = opt.text
                     if len(ot) > 160:
                         ot = ot[:160] + "…"
-                    print(f"[run]   {opt.label}) {ot!r}")
+                    print(f"[run]   {opt.label}) {_console_safe(ot)!r}")
                 if vis_path:
                     print(f"[run]   file immagine solver: {vis_path}")
                 t0 = time.time()
@@ -317,9 +354,56 @@ def main() -> int:
                 print(f"[run] done {q.qid}: answer={r.answer} conf={r.confidence:.2f} ({dt:.2f}s)")
             last_call_t = time.time()
 
+        for idx, q in enumerate(open_questions, start=1):
+            if args.min_request_interval > 0:
+                now = time.time()
+                wait_s = (last_call_t + args.min_request_interval) - now
+                if wait_s > 0:
+                    if args.verbose:
+                        print(f"[run] throttling: sleep {wait_s:.2f}s")
+                    time.sleep(wait_s)
+
+            vis_path, vis_kind = resolve_solve_image(q)
+            inp = SolveInput(
+                qid=q.qid,
+                subject=args.subject,
+                prompt=q.prompt,
+                options=[],
+                page_image_png_path=vis_path,
+            )
+            if args.verbose:
+                img_note = "no"
+                if vis_path:
+                    ii = f", figure={q.image_index+1}" if q.image_index is not None and vis_kind == "region" else ""
+                    img_note = f"{vis_kind}{ii}"
+                print(
+                    f"[run] solve OPEN {idx}/{len(open_questions)}: {q.qid} "
+                    f"(page {q.page_index+1}, visual={img_note})"
+                )
+                pr = q.prompt
+                if len(pr) > 400:
+                    pr = pr[:400] + "…"
+                print(f"[run]   testo domanda aperta: {_console_safe(pr)!r}")
+                if vis_path:
+                    print(f"[run]   file immagine solver: {vis_path}")
+                t0 = time.time()
+            open_results[q.qid] = solver.solve_open(inp)
+            if args.verbose:
+                dt = time.time() - t0
+                r = open_results[q.qid]
+                print(f"[run] done OPEN {q.qid}: conf={r.confidence:.2f} ({dt:.2f}s)")
+            last_call_t = time.time()
+
     # Annotate and write outputs.
-    if results:
-        stats = annotate_pdf(pdf_in=pdf_in, pdf_out=pdf_out, questions=questions, results=results, mode=args.mode)
+    if results or open_results:
+        stats = annotate_pdf(
+            pdf_in=pdf_in,
+            pdf_out=pdf_out,
+            questions=questions,
+            results=results,
+            open_results=open_results,
+            mode=args.mode,
+        )
     else:
         pdf_out.write_bytes(pdf_in.read_bytes())
         stats = type("Tmp", (), {"highlighted": 0, "fallback_notes": 0})()
@@ -336,17 +420,32 @@ def main() -> int:
             row["visual_kind"] = vk
         answers_out[qid] = row
 
+    open_answers_out: dict[str, dict] = {}
+    open_by_qid = {q.qid: q for q in questions if is_open_question_candidate(q)}
+    for qid, res in open_results.items():
+        row = res.model_dump()
+        qo = open_by_qid.get(qid)
+        if qo is not None:
+            _vp, vk = resolve_solve_image(qo)
+            row["page"] = qo.page_index + 1
+            row["image_index_on_page"] = qo.image_index
+            row["visual_kind"] = vk
+        open_answers_out[qid] = row
+
     payload = {
         "pdf_in": str(pdf_in),
         "pdf_out": str(pdf_out),
         "mode": args.mode,
         "backend": args.backend,
         "model": args.model,
+        "subject": args.subject,
         "pages": args.pages,
         "stats": {"highlighted": stats.highlighted, "fallback_notes": stats.fallback_notes},
         "question_count": len(questions),
         "mcq_count": sum(1 for q in questions if len(q.options) == 4),
+        "open_count": sum(1 for q in questions if is_open_question_candidate(q)),
         "answers": answers_out,
+        "open_answers": open_answers_out,
     }
     answers_json.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 

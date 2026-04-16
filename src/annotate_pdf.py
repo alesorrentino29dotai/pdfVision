@@ -7,7 +7,7 @@ from typing import Literal, Mapping, Optional
 import fitz  # PyMuPDF
 
 from .question_segment import Question
-from .solver.base import AnswerLabel, SolveResult
+from .solver.base import AnswerLabel, OpenSolveResult, SolveResult
 
 
 AnnotateMode = Literal["highlight_correct", "strike_wrong"]
@@ -45,6 +45,32 @@ def _fallback_note(page: fitz.Page, q: Question, res: SolveResult, suffix: str =
     note.update()
 
 
+def _draw_open_answer_inline(page: fitz.Page, q: Question, open_res: OpenSolveResult) -> bool:
+    if q.prompt_lines:
+        x0 = min(ln.bbox[0] for ln in q.prompt_lines)
+        y1 = max(ln.bbox[3] for ln in q.prompt_lines)
+    else:
+        x0, y1 = 36.0, 50.0
+
+    margin = 36.0
+    start = fitz.Point(max(margin, x0), min(page.rect.height - 30, y1 + 8))
+    box = fitz.Rect(start.x, start.y, page.rect.width - margin, min(page.rect.height - 6, start.y + 90))
+    if box.height < 14 or box.width < 50:
+        return False
+
+    txt = f"Risposta: {open_res.answer_text}"
+    spare = page.insert_textbox(
+        box,
+        txt,
+        fontsize=9.4,
+        fontname="helv",
+        color=(0.05, 0.50, 0.05),
+        align=fitz.TEXT_ALIGN_LEFT,
+        overlay=True,
+    )
+    return spare >= -1.0
+
+
 def _square_annot(
     page: fitz.Page,
     r: fitz.Rect,
@@ -71,12 +97,12 @@ def annotate_pdf(
     pdf_out: str | Path,
     questions: list[Question],
     results: Mapping[str, SolveResult],  # qid -> result
+    open_results: Optional[Mapping[str, OpenSolveResult]] = None,  # qid -> open answer
     mode: AnnotateMode = "highlight_correct",
 ) -> AnnotateStats:
     """
-    Marca le opzioni con annotazioni PDF **Square** (non ``highlight``): stanno nel layer
-    annotazioni sopra al testo. In più, ``page.wrap_contents()`` prima dei disegni vettoriali
-    evita che linee/riempimenti finiscano *sotto* a immagini o maschere nel content stream.
+    Marca le opzioni MCQ con annotazioni PDF **Square** e scrive le risposte aperte inline.
+    Le square annotations stanno nel layer annotazioni, sopra al testo.
     """
     pdf_in = Path(pdf_in)
     pdf_out = Path(pdf_out)
@@ -86,15 +112,28 @@ def annotate_pdf(
 
     doc = fitz.open(pdf_in)
     wrapped: set[int] = set()
+    open_results = open_results or {}
     try:
         for q in questions:
-            res = results.get(q.qid)
-            if not res:
-                continue
             page = doc.load_page(q.page_index)
             if q.page_index not in wrapped:
                 page.wrap_contents()
                 wrapped.add(q.page_index)
+
+            # Open-ended question rendering.
+            open_res = open_results.get(q.qid)
+            if open_res is not None:
+                if not _draw_open_answer_inline(page, q, open_res):
+                    pos = fitz.Point(36, max(20, page.rect.height - 40))
+                    note = page.add_text_annot(pos, f"Risposta: {open_res.answer_text}")
+                    note.update()
+                    fallback_notes += 1
+                continue
+
+            # MCQ rendering.
+            res = results.get(q.qid)
+            if not res:
+                continue
 
             rect = _option_rect(q, res.answer)
             if rect is not None and rect.is_valid:
@@ -110,7 +149,7 @@ def annotate_pdf(
                             stroke=(0.0, 0.55, 0.05),
                             fill=(0.55, 1.0, 0.45),
                             border=1.4,
-                            opacity=0.9,
+                            opacity=0.45,
                         )
                         if ok:
                             highlighted += 1
@@ -133,7 +172,7 @@ def annotate_pdf(
                                 stroke=(0.0, 0.55, 0.05),
                                 fill=(0.55, 1.0, 0.45),
                                 border=1.4,
-                                opacity=0.9,
+                                opacity=0.45,
                             ):
                                 drew_any = True
                         else:

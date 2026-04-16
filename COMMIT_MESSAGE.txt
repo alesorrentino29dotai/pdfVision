@@ -1,0 +1,4 @@
+feat: subject prompts, open questions, readable annotations
+
+Add --subject and propagate it across all solver backends. Support open-ended questions with dedicated solving + inline green answers in the annotated PDF. Improve annotation readability by lowering the green opacity and persisting open answers in answers.json with replay support.
+

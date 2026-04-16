@@ -7,7 +7,7 @@ from google import genai
 from google.genai import types
 from google.genai import errors as genai_errors
 
-from .base import SolveInput, SolveResult, Solver
+from .base import OpenSolveResult, SolveInput, SolveResult, Solver
 
 
 class GeminiSolver(Solver):
@@ -34,7 +34,7 @@ class GeminiSolver(Solver):
         opts = "\n".join([f"{chr(ord('A')+i)}) {t}" for i, t in enumerate(inp.options)])
 
         prompt = (
-            "Sei un tutor di elettrotecnica. Devi scegliere UNA sola risposta corretta (A-D) "
+            f"Sei un tutor di {inp.subject}. Devi scegliere UNA sola risposta corretta (A-D) "
             "per una domanda a scelta multipla. Rispondi solo in JSON conforme allo schema.\n\n"
             f"QID: {inp.qid}\n"
             f"Domanda:\n{inp.prompt}\n\n"
@@ -95,5 +95,64 @@ class GeminiSolver(Solver):
                 raise
 
         raise last_err or RuntimeError("Gemini solve failed")
+
+    def solve_open(self, inp: SolveInput) -> OpenSolveResult:
+        prompt = (
+            f"Sei un tutor di {inp.subject}. Fornisci una risposta testuale concisa a una domanda aperta. "
+            "Rispondi solo in JSON conforme allo schema.\n\n"
+            f"QID: {inp.qid}\n"
+            f"Domanda aperta:\n{inp.prompt}\n"
+        )
+
+        contents: list[types.Part | str] = [prompt]
+        if inp.page_image_png_path:
+            img_bytes = Path(inp.page_image_png_path).read_bytes()
+            contents.append(types.Part.from_bytes(data=img_bytes, mime_type="image/png"))
+
+        import re
+        import time
+
+        last_err: Optional[Exception] = None
+        for attempt in range(1, 9):
+            try:
+                t0 = time.time()
+                resp = self._client.models.generate_content(
+                    model=self._model,
+                    contents=contents,
+                    config=types.GenerateContentConfig(
+                        temperature=0,
+                        response_mime_type="application/json",
+                        response_json_schema=OpenSolveResult.model_json_schema(),
+                    ),
+                )
+                dt = time.time() - t0
+                if self._verbose:
+                    print(f"[gemini] {inp.qid} (open): response in {dt:.2f}s")
+                txt = (resp.text or "").strip()
+                return OpenSolveResult.model_validate_json(txt)
+            except genai_errors.ClientError as e:
+                last_err = e
+                msg = str(e)
+                if "RESOURCE_EXHAUSTED" in msg or " 429 " in msg or msg.startswith("429"):
+                    m = re.search(r"retryDelay'?:\s*'(?P<s>\d+)s'", msg)
+                    if m:
+                        wait_s = int(m.group("s")) + 1
+                        if self._verbose:
+                            print(f"[gemini] {inp.qid} (open): 429, sleep {wait_s}s (attempt {attempt}/8)")
+                        time.sleep(wait_s)
+                        continue
+                    m2 = re.search(r"retry in\s+(?P<s>\d+)(?:\.\d+)?s", msg, flags=re.IGNORECASE)
+                    if m2:
+                        wait_s = int(m2.group("s")) + 1
+                        if self._verbose:
+                            print(f"[gemini] {inp.qid} (open): 429, sleep {wait_s}s (attempt {attempt}/8)")
+                        time.sleep(wait_s)
+                        continue
+                    if self._verbose:
+                        print(f"[gemini] {inp.qid} (open): 429, sleep 15s (attempt {attempt}/8)")
+                    time.sleep(15)
+                    continue
+                raise
+        raise last_err or RuntimeError("Gemini open solve failed")
 
 
