@@ -74,9 +74,6 @@ python run.py --in QUIZ.pdf --out annotated.pdf [--pages 1-5] [--verbose] [--bac
 ```bash
 python scripts/benchmark_ollama.py
 ```
-
----
-
 ## Project layout
 
 ```
@@ -94,34 +91,6 @@ pdfVision/
 
 ---
 
-## Publishing a **private** GitHub repository
-
-From the project root (after reviewing `.gitignore` and removing any local secrets):
-
-```bash
-git init
-git add .
-git commit -m "Initial commit: pdfVision pipeline"
-```
-
-Using [GitHub CLI](https://cli.github.com/):
-
-```bash
-gh auth login
-gh repo create pdfVision --private --source=. --remote=origin --push
-```
-
-Or create an empty private repo in the GitHub UI, then:
-
-```bash
-git remote add origin https://github.com/YOUR_USER/pdfVision.git
-git branch -M main
-git push -u origin main
-```
-
-Do **not** commit API keys, `gem_key.txt`, or copyrighted exam PDFs you are not allowed to redistribute.
-
----
 
 ## License
 
